@@ -1,10 +1,11 @@
+// src/services/DeduplicationEngine.js - Fixed TF-IDF implementation
+
 const EventEmitter = require('events');
 const natural = require('natural');
 const stringSimilarity = require('string-similarity');
 const Levenshtein = require('levenshtein');
 const crypto = require('crypto');
 const stopword = require('stopword');
-const stemmer = require('stemmer');
 
 const logger = require('../utils/logger');
 const config = require('../config/config');
@@ -12,51 +13,98 @@ const LLMAnalyzer = require('../utils/LLMAnalyzer');
 const VectorSimilarity = require('../utils/VectorSimilarity');
 const ClusteringEngine = require('../utils/ClusteringEngine');
 
-// Simple TF-IDF implementation since the library might not be available
+// Fixed TF-IDF implementation
 class SimpleTfIdf {
   constructor() {
     this.documents = [];
     this.vocabulary = new Set();
+    this.documentFrequencies = new Map();
   }
 
   addDocument(document) {
+    if (!document || typeof document !== 'string') {
+      return;
+    }
+    
     const words = this.tokenize(document);
     this.documents.push(words);
-    words.forEach(word => this.vocabulary.add(word));
+    
+    // Update vocabulary and document frequencies
+    const uniqueWords = new Set(words);
+    uniqueWords.forEach(word => {
+      this.vocabulary.add(word);
+      this.documentFrequencies.set(word, (this.documentFrequencies.get(word) || 0) + 1);
+    });
   }
 
   tokenize(text) {
+    if (!text || typeof text !== 'string') return [];
+    
     return text.toLowerCase()
       .replace(/[^\w\s]/g, ' ')
       .split(/\s+/)
-      .filter(word => word.length > 2);
+      .filter(word => word.length > 2 && word.length < 20)
+      .slice(0, 1000); // Limit words to prevent memory issues
   }
 
   tf(term, document) {
+    if (!document || document.length === 0) return 0;
     const termCount = document.filter(word => word === term).length;
     return termCount / document.length;
   }
 
   idf(term) {
-    const docsWithTerm = this.documents.filter(doc => doc.includes(term)).length;
-    return Math.log(this.documents.length / (docsWithTerm || 1));
+    const docsWithTerm = this.documentFrequencies.get(term) || 0;
+    if (docsWithTerm === 0) return 0;
+    return Math.log(this.documents.length / docsWithTerm);
   }
 
   tfidf(term, docIndex) {
-    if (docIndex >= this.documents.length) return 0;
+    if (docIndex >= this.documents.length || docIndex < 0) return 0;
     const document = this.documents[docIndex];
+    if (!document) return 0;
+    
     return this.tf(term, document) * this.idf(term);
   }
 
   getVector(docIndex) {
+    if (docIndex >= this.documents.length || docIndex < 0) return [];
+    
     const vector = [];
-    const vocab = Array.from(this.vocabulary);
+    const vocab = Array.from(this.vocabulary).slice(0, 500); // Limit vocabulary size
     
     for (const term of vocab) {
       vector.push(this.tfidf(term, docIndex));
     }
     
     return vector;
+  }
+
+  // Calculate cosine similarity between two document vectors
+  calculateSimilarity(docIndex1, docIndex2) {
+    const vector1 = this.getVector(docIndex1);
+    const vector2 = this.getVector(docIndex2);
+    
+    if (vector1.length === 0 || vector2.length === 0) return 0;
+    
+    return this.cosineSimilarity(vector1, vector2);
+  }
+
+  cosineSimilarity(vectorA, vectorB) {
+    if (!vectorA || !vectorB || vectorA.length !== vectorB.length) return 0;
+    
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+    
+    for (let i = 0; i < vectorA.length; i++) {
+      dotProduct += vectorA[i] * vectorB[i];
+      normA += vectorA[i] * vectorA[i];
+      normB += vectorB[i] * vectorB[i];
+    }
+    
+    const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
+    return magnitude === 0 ? 0 : dotProduct / magnitude;
   }
 }
 
@@ -68,7 +116,6 @@ class DeduplicationEngine extends EventEmitter {
     this.vectorSimilarity = new VectorSimilarity();
     this.clusteringEngine = new ClusteringEngine();
     
-    this.tfidf = new SimpleTfIdf();
     this.processingQueue = [];
     this.isProcessing = false;
     
@@ -78,7 +125,8 @@ class DeduplicationEngine extends EventEmitter {
       duplicatesDetected: 0,
       uniqueArticles: 0,
       averageProcessingTime: 0,
-      lastProcessedAt: null
+      lastProcessedAt: null,
+      errors: 0
     };
     
     // Time window for clustering (in milliseconds)
@@ -144,6 +192,7 @@ class DeduplicationEngine extends EventEmitter {
           this.stats.articlesProcessed++;
         } catch (error) {
           logger.error(`❌ Failed to process article ${item.article._id}:`, error);
+          this.stats.errors++;
           
           // Retry logic
           if (item.retryCount < 3) {
@@ -162,6 +211,7 @@ class DeduplicationEngine extends EventEmitter {
       
     } catch (error) {
       logger.error('❌ Batch processing failed:', error);
+      this.stats.errors++;
     } finally {
       this.isProcessing = false;
     }
@@ -205,6 +255,7 @@ class DeduplicationEngine extends EventEmitter {
       
     } catch (error) {
       logger.error('❌ Deduplication analysis failed:', error);
+      this.stats.errors++;
       throw error;
     }
   }
@@ -224,16 +275,13 @@ class DeduplicationEngine extends EventEmitter {
         { category: article.category },
         
         // Overlapping tags
-        { tags: { $in: article.tags } },
-        
-        // Similar entities
-        { 'entities.name': { $in: article.entities?.map(e => e.name) || [] } }
+        { tags: { $in: article.tags || [] } }
       ]
     };
     
     const candidates = await this.dbManager.findArticles(query, {
       sort: { publishedAt: -1 },
-      limit: 100 // Limit to avoid processing too many candidates
+      limit: 50 // Reduced limit to prevent performance issues
     });
     
     return candidates;
@@ -265,102 +313,123 @@ class DeduplicationEngine extends EventEmitter {
   async calculateSimilarityScore(article1, article2) {
     const scores = {};
     
-    // 1. Content Hash Comparison (fastest)
-    scores.contentHash = article1.contentHash === article2.contentHash ? 1.0 : 0.0;
-    
-    // If content hashes match, it's definitely a duplicate
-    if (scores.contentHash === 1.0) {
+    try {
+      // 1. Content Hash Comparison (fastest)
+      scores.contentHash = article1.contentHash === article2.contentHash ? 1.0 : 0.0;
+      
+      // If content hashes match, it's definitely a duplicate
+      if (scores.contentHash === 1.0) {
+        return {
+          ...scores,
+          overallScore: 1.0,
+          method: 'content_hash'
+        };
+      }
+      
+      // 2. Title Similarity
+      scores.titleSimilarity = this.calculateTextSimilarity(
+        article1.title, 
+        article2.title
+      );
+      
+      // 3. Content Similarity (TF-IDF based) - Fixed implementation
+      scores.contentSimilarity = await this.calculateContentSimilarity(
+        article1, 
+        article2
+      );
+      
+      // 4. Entity Similarity
+      scores.entitySimilarity = this.calculateEntitySimilarity(
+        article1.entities || [], 
+        article2.entities || []
+      );
+      
+      // 5. Semantic Similarity (Vector embeddings)
+      scores.semanticSimilarity = await this.calculateSemanticSimilarity(
+        article1, 
+        article2
+      );
+      
+      // 6. Temporal Proximity
+      scores.temporalProximity = this.calculateTemporalProximity(
+        article1.publishedAt, 
+        article2.publishedAt
+      );
+      
+      // 7. Source and Category Alignment
+      scores.sourceAlignment = this.calculateSourceAlignment(article1, article2);
+      
+      // Calculate weighted overall score
+      const weights = config.deduplication;
+      scores.overallScore = (
+        scores.titleSimilarity * weights.titleWeight +
+        scores.contentSimilarity * weights.contentWeight +
+        scores.entitySimilarity * weights.entityWeight +
+        scores.semanticSimilarity * 0.3 +
+        scores.temporalProximity * 0.1 +
+        scores.sourceAlignment * 0.1
+      );
+      
+      // Determine primary detection method
+      scores.method = this.determinePrimaryMethod(scores);
+      
+      return scores;
+      
+    } catch (error) {
+      logger.warn('⚠️  Similarity calculation error:', error.message);
       return {
-        ...scores,
-        overallScore: 1.0,
-        method: 'content_hash'
+        contentHash: 0,
+        titleSimilarity: 0,
+        contentSimilarity: 0,
+        entitySimilarity: 0,
+        semanticSimilarity: 0,
+        temporalProximity: 0,
+        sourceAlignment: 0,
+        overallScore: 0,
+        method: 'error'
       };
     }
-    
-    // 2. Title Similarity
-    scores.titleSimilarity = this.calculateTextSimilarity(
-      article1.title, 
-      article2.title
-    );
-    
-    // 3. Content Similarity (TF-IDF based)
-    scores.contentSimilarity = await this.calculateContentSimilarity(
-      article1, 
-      article2
-    );
-    
-    // 4. Entity Similarity
-    scores.entitySimilarity = this.calculateEntitySimilarity(
-      article1.entities || [], 
-      article2.entities || []
-    );
-    
-    // 5. Semantic Similarity (Vector embeddings)
-    scores.semanticSimilarity = await this.calculateSemanticSimilarity(
-      article1, 
-      article2
-    );
-    
-    // 6. Temporal Proximity
-    scores.temporalProximity = this.calculateTemporalProximity(
-      article1.publishedAt, 
-      article2.publishedAt
-    );
-    
-    // 7. Source and Category Alignment
-    scores.sourceAlignment = this.calculateSourceAlignment(article1, article2);
-    
-    // Calculate weighted overall score
-    const weights = config.deduplication;
-    scores.overallScore = (
-      scores.titleSimilarity * weights.titleWeight +
-      scores.contentSimilarity * weights.contentWeight +
-      scores.entitySimilarity * weights.entityWeight +
-      scores.semanticSimilarity * 0.3 +
-      scores.temporalProximity * 0.1 +
-      scores.sourceAlignment * 0.1
-    );
-    
-    // Determine primary detection method
-    scores.method = this.determinePrimaryMethod(scores);
-    
-    return scores;
   }
 
   calculateTextSimilarity(text1, text2) {
     if (!text1 || !text2) return 0;
     
-    // Normalize texts
-    const norm1 = this.normalizeText(text1);
-    const norm2 = this.normalizeText(text2);
-    
-    // Calculate multiple similarity metrics
-    const jaccardSim = this.jaccardSimilarity(norm1, norm2);
-    const cosineSim = stringSimilarity.compareTwoStrings(norm1, norm2);
-    const levenshteinSim = 1 - (new Levenshtein(norm1, norm2).distance / Math.max(norm1.length, norm2.length));
-    
-    // Return weighted average
-    return (jaccardSim * 0.3 + cosineSim * 0.5 + levenshteinSim * 0.2);
+    try {
+      // Normalize texts
+      const norm1 = this.normalizeText(text1);
+      const norm2 = this.normalizeText(text2);
+      
+      if (norm1.length === 0 || norm2.length === 0) return 0;
+      
+      // Calculate multiple similarity metrics
+      const jaccardSim = this.jaccardSimilarity(norm1, norm2);
+      const cosineSim = stringSimilarity.compareTwoStrings(norm1, norm2);
+      
+      // Return weighted average
+      return (jaccardSim * 0.4 + cosineSim * 0.6);
+    } catch (error) {
+      logger.warn('Text similarity calculation failed:', error.message);
+      return 0;
+    }
   }
 
   async calculateContentSimilarity(article1, article2) {
     try {
       // Use TF-IDF for content similarity
-      const content1 = this.preprocessContent(article1.content || article1.summary);
-      const content2 = this.preprocessContent(article2.content || article2.summary);
+      const content1 = this.preprocessContent(article1.content || article1.summary || '');
+      const content2 = this.preprocessContent(article2.content || article2.summary || '');
       
-      if (!content1 || !content2) return 0;
+      if (!content1 || !content2 || content1.length < 10 || content2.length < 10) {
+        return 0;
+      }
       
       // Create temporary TF-IDF instance for comparison
       const tfidf = new SimpleTfIdf();
       tfidf.addDocument(content1);
       tfidf.addDocument(content2);
       
-      // Calculate cosine similarity between TF-IDF vectors
-      const vector1 = tfidf.getVector(0);
-      const vector2 = tfidf.getVector(1);
-      
-      return this.cosineSimilarity(vector1, vector2);
+      // Calculate similarity between the two documents
+      return tfidf.calculateSimilarity(0, 1);
       
     } catch (error) {
       logger.warn('⚠️  Content similarity calculation failed:', error.message);
@@ -371,13 +440,18 @@ class DeduplicationEngine extends EventEmitter {
   calculateEntitySimilarity(entities1, entities2) {
     if (!entities1.length || !entities2.length) return 0;
     
-    const names1 = new Set(entities1.map(e => e.name.toLowerCase()));
-    const names2 = new Set(entities2.map(e => e.name.toLowerCase()));
-    
-    const intersection = new Set([...names1].filter(x => names2.has(x)));
-    const union = new Set([...names1, ...names2]);
-    
-    return intersection.size / union.size; // Jaccard similarity
+    try {
+      const names1 = new Set(entities1.map(e => e.name.toLowerCase()));
+      const names2 = new Set(entities2.map(e => e.name.toLowerCase()));
+      
+      const intersection = new Set([...names1].filter(x => names2.has(x)));
+      const union = new Set([...names1, ...names2]);
+      
+      return intersection.size / union.size; // Jaccard similarity
+    } catch (error) {
+      logger.warn('Entity similarity calculation failed:', error.message);
+      return 0;
+    }
   }
 
   async calculateSemanticSimilarity(article1, article2) {
@@ -397,30 +471,38 @@ class DeduplicationEngine extends EventEmitter {
   }
 
   calculateTemporalProximity(date1, date2) {
-    const timeDiff = Math.abs(new Date(date1) - new Date(date2));
-    const hoursDiff = timeDiff / (1000 * 60 * 60);
-    
-    // Closer in time = higher score
-    return Math.max(0, 1 - (hoursDiff / 24)); // Normalize to 24 hours
+    try {
+      const timeDiff = Math.abs(new Date(date1) - new Date(date2));
+      const hoursDiff = timeDiff / (1000 * 60 * 60);
+      
+      // Closer in time = higher score
+      return Math.max(0, 1 - (hoursDiff / 24)); // Normalize to 24 hours
+    } catch (error) {
+      return 0;
+    }
   }
 
   calculateSourceAlignment(article1, article2) {
-    let score = 0;
-    
-    // Same source
-    if (article1.source === article2.source) score += 0.4;
-    
-    // Same category
-    if (article1.category === article2.category) score += 0.3;
-    
-    // Overlapping tags
-    const tags1 = new Set(article1.tags);
-    const tags2 = new Set(article2.tags);
-    const tagOverlap = [...tags1].filter(tag => tags2.has(tag)).length;
-    const maxTags = Math.max(tags1.size, tags2.size);
-    if (maxTags > 0) score += (tagOverlap / maxTags) * 0.3;
-    
-    return Math.min(score, 1.0);
+    try {
+      let score = 0;
+      
+      // Same source
+      if (article1.source === article2.source) score += 0.4;
+      
+      // Same category
+      if (article1.category === article2.category) score += 0.3;
+      
+      // Overlapping tags
+      const tags1 = new Set(article1.tags || []);
+      const tags2 = new Set(article2.tags || []);
+      const tagOverlap = [...tags1].filter(tag => tags2.has(tag)).length;
+      const maxTags = Math.max(tags1.size, tags2.size);
+      if (maxTags > 0) score += (tagOverlap / maxTags) * 0.3;
+      
+      return Math.min(score, 1.0);
+    } catch (error) {
+      return 0;
+    }
   }
 
   identifyDuplicates(similarities) {
@@ -482,7 +564,8 @@ class DeduplicationEngine extends EventEmitter {
           timeDifference: Math.abs(
             new Date(originalArticle.publishedAt) - new Date(duplicate.article.publishedAt)
           )
-        }
+        },
+        createdAt: new Date()
       });
     }
     
@@ -545,18 +628,23 @@ class DeduplicationEngine extends EventEmitter {
         const text = `${article.title} ${article.content || article.summary}`;
         const vector = await this.vectorSimilarity.generateEmbedding(text);
         
-        // Store embedding
-        await this.dbManager.insertEmbedding({
-          articleId: article._id,
-          vector: vector,
-          model: config.deduplication.semanticModel,
-          textLength: text.length
-        });
-        
-        return vector;
+        if (vector) {
+          // Store embedding
+          await this.dbManager.insertEmbedding({
+            articleId: article._id,
+            vector: vector,
+            model: config.deduplication.semanticModel,
+            textLength: text.length,
+            createdAt: new Date()
+          });
+          
+          return vector;
+        }
+      } else {
+        return embedding.vector;
       }
       
-      return embedding.vector;
+      return null;
       
     } catch (error) {
       logger.warn('⚠️  Failed to get/generate embedding:', error.message);
@@ -566,6 +654,7 @@ class DeduplicationEngine extends EventEmitter {
 
   // Helper methods
   normalizeText(text) {
+    if (!text) return '';
     return text
       .toLowerCase()
       .replace(/[^\w\s]/g, ' ')
@@ -576,37 +665,51 @@ class DeduplicationEngine extends EventEmitter {
   preprocessContent(content) {
     if (!content) return '';
     
-    // Remove stop words and stem
-    const words = this.normalizeText(content).split(' ');
-    const filteredWords = stopword.removeStopwords(words);
-    return filteredWords.map(word => stemmer(word)).join(' ');
+    try {
+      // Remove stop words and basic processing
+      const words = this.normalizeText(content).split(' ')
+        .filter(word => word.length > 2 && word.length < 15)
+        .slice(0, 500); // Limit to prevent performance issues
+      
+      return stopword.removeStopwords(words).join(' ');
+    } catch (error) {
+      return content;
+    }
   }
 
   jaccardSimilarity(text1, text2) {
-    const set1 = new Set(text1.split(' '));
-    const set2 = new Set(text2.split(' '));
-    
-    const intersection = new Set([...set1].filter(x => set2.has(x)));
-    const union = new Set([...set1, ...set2]);
-    
-    return intersection.size / union.size;
+    try {
+      const set1 = new Set(text1.split(' '));
+      const set2 = new Set(text2.split(' '));
+      
+      const intersection = new Set([...set1].filter(x => set2.has(x)));
+      const union = new Set([...set1, ...set2]);
+      
+      return intersection.size / union.size;
+    } catch (error) {
+      return 0;
+    }
   }
 
   cosineSimilarity(vectorA, vectorB) {
     if (!vectorA || !vectorB || vectorA.length !== vectorB.length) return 0;
     
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
-    
-    for (let i = 0; i < vectorA.length; i++) {
-      dotProduct += vectorA[i] * vectorB[i];
-      normA += vectorA[i] * vectorA[i];
-      normB += vectorB[i] * vectorB[i];
+    try {
+      let dotProduct = 0;
+      let normA = 0;
+      let normB = 0;
+      
+      for (let i = 0; i < vectorA.length; i++) {
+        dotProduct += vectorA[i] * vectorB[i];
+        normA += vectorA[i] * vectorA[i];
+        normB += vectorB[i] * vectorB[i];
+      }
+      
+      const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
+      return magnitude === 0 ? 0 : dotProduct / magnitude;
+    } catch (error) {
+      return 0;
     }
-    
-    const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
-    return magnitude === 0 ? 0 : dotProduct / magnitude;
   }
 
   determinePrimaryMethod(scores) {
@@ -615,19 +718,6 @@ class DeduplicationEngine extends EventEmitter {
     if (scores.semanticSimilarity > 0.85) return 'semantic_similarity';
     if (scores.entitySimilarity > 0.8) return 'entity_similarity';
     return 'content_similarity';
-  }
-
-  async performLLMValidation(article1, article2, similarityScore) {
-    try {
-      if (similarityScore < 0.7) return false; // Only validate high-confidence matches
-      
-      const validation = await this.llmAnalyzer.validateDuplicate(article1, article2);
-      return validation.isDuplicate && validation.confidence > this.thresholds.llmValidation;
-      
-    } catch (error) {
-      logger.warn('⚠️  LLM validation failed:', error.message);
-      return false;
-    }
   }
 
   async stop() {
@@ -644,43 +734,6 @@ class DeduplicationEngine extends EventEmitter {
       thresholds: this.thresholds,
       timeWindow: this.timeWindow
     };
-  }
-
-  // Advanced duplicate detection for edge cases
-  async detectFollowUpStories(article) {
-    // Detect if this is a follow-up to an existing story
-    const keywords = this.extractKeywords(article.title + ' ' + article.content);
-    
-    const query = {
-      publishedAt: { 
-        $gte: new Date(Date.now() - this.timeWindow),
-        $lt: new Date(article.publishedAt)
-      },
-      $text: { $search: keywords.slice(0, 5).join(' ') }
-    };
-    
-    const potentialOriginals = await this.dbManager.findArticles(query, {
-      sort: { publishedAt: 1 },
-      limit: 10
-    });
-    
-    return potentialOriginals;
-  }
-
-  extractKeywords(text) {
-    const words = this.preprocessContent(text).split(' ');
-    const wordFreq = {};
-    
-    words.forEach(word => {
-      if (word.length > 3) {
-        wordFreq[word] = (wordFreq[word] || 0) + 1;
-      }
-    });
-    
-    return Object.entries(wordFreq)
-      .sort(([,a], [,b]) => b - a)
-      .slice(0, 10)
-      .map(([word]) => word);
   }
 }
 

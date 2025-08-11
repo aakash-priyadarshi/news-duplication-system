@@ -1,0 +1,968 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>News Deduplication Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            color: white;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .status-bar {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+
+        .status-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            flex: 1;
+            min-width: 200px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            transition: transform 0.3s ease;
+        }
+
+        .status-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .status-card h3 {
+            color: #666;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+
+        .status-card .value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .status-card .trend {
+            font-size: 0.8rem;
+            margin-top: 5px;
+        }
+
+        .trend.up { color: #10b981; }
+        .trend.down { color: #ef4444; }
+        .trend.neutral { color: #6b7280; }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .chart-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .chart-card h3 {
+            margin-bottom: 20px;
+            color: #333;
+            font-size: 1.2rem;
+        }
+
+        .articles-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+        }
+
+        .articles-list {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .articles-list h3 {
+            margin-bottom: 20px;
+            color: #333;
+            font-size: 1.2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .refresh-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: background 0.3s ease;
+            position: relative;
+        }
+
+        .refresh-btn:hover {
+            background: #5a6fd8;
+        }
+
+        .refresh-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .refresh-btn.loading::after {
+            content: '';
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            margin: auto;
+            border: 2px solid transparent;
+            border-top-color: #ffffff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+        }
+
+        .article-item {
+            border-bottom: 1px solid #e5e7eb;
+            padding: 15px 0;
+            transition: background 0.3s ease;
+        }
+
+        .article-item:hover {
+            background: rgba(103, 126, 234, 0.05);
+            margin: 0 -10px;
+            padding: 15px 10px;
+            border-radius: 8px;
+        }
+
+        .article-item:last-child {
+            border-bottom: none;
+        }
+
+        .article-title {
+            font-weight: 600;
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+
+        .article-meta {
+            display: flex;
+            gap: 15px;
+            font-size: 0.8rem;
+            color: #666;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+        }
+
+        .article-summary {
+            font-size: 0.9rem;
+            color: #555;
+            line-height: 1.4;
+        }
+
+        .source-tag {
+            background: #667eea;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.7rem;
+            font-weight: 500;
+        }
+
+        .duplicate-badge {
+            background: #ef4444;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.7rem;
+            font-weight: 500;
+        }
+
+        .feeds-status {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .feeds-status h3 {
+            margin-bottom: 20px;
+            color: #333;
+            font-size: 1.2rem;
+        }
+
+        .feed-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .feed-item:last-child {
+            border-bottom: none;
+        }
+
+        .feed-name {
+            font-weight: 500;
+        }
+
+        .feed-status {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.7rem;
+            font-weight: 500;
+        }
+
+        .feed-status.active {
+            background: #10b981;
+            color: white;
+        }
+
+        .feed-status.error {
+            background: #ef4444;
+            color: white;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        .spinner {
+            border: 4px solid #f3f4f6;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        .cache-info {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 0.8rem;
+            z-index: 1000;
+        }
+
+        .error-message {
+            background: #fee2e2;
+            border: 1px solid #fecaca;
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+            color: #dc2626;
+        }
+
+        .status-details {
+            font-size: 0.7rem;
+            margin-top: 5px;
+            color: #666;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        @media (max-width: 768px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .articles-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .status-bar {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📰 News Deduplication Dashboard</h1>
+            <p>Real-time monitoring of news processing and duplicate detection</p>
+        </div>
+
+        <div class="status-bar">
+            <div class="status-card">
+                <h3>Total Articles</h3>
+                <div class="value" id="totalArticles">-</div>
+                <div class="trend neutral" id="articlesTrend">Loading...</div>
+                <div class="status-details" id="articlesDetails"></div>
+            </div>
+            <div class="status-card">
+                <h3>Duplicates Detected</h3>
+                <div class="value" id="totalDuplicates">-</div>
+                <div class="trend neutral" id="duplicatesTrend">Loading...</div>
+                <div class="status-details" id="duplicatesDetails"></div>
+            </div>
+            <div class="status-card">
+                <h3>Active Feeds</h3>
+                <div class="value" id="activeFeeds">-</div>
+                <div class="trend neutral" id="feedsTrend">Loading...</div>
+                <div class="status-details" id="feedsDetails"></div>
+            </div>
+            <div class="status-card">
+                <h3>System Status</h3>
+                <div class="value" id="systemStatus">-</div>
+                <div class="trend neutral" id="statusTrend">Checking...</div>
+                <div class="status-details" id="systemDetails"></div>
+            </div>
+        </div>
+
+        <div class="dashboard-grid">
+            <div class="chart-card">
+                <h3>Articles Processed Over Time</h3>
+                <canvas id="articlesChart"></canvas>
+            </div>
+            <div class="chart-card">
+                <h3>Source Distribution</h3>
+                <canvas id="sourcesChart"></canvas>
+            </div>
+        </div>
+
+        <div class="articles-grid">
+            <div class="articles-list">
+                <h3>
+                    Recent Articles
+                    <button class="refresh-btn" onclick="forceRefreshArticles()" id="refreshBtn">🔄 Refresh</button>
+                </h3>
+                <div id="articlesList">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        Loading articles...
+                    </div>
+                </div>
+            </div>
+            
+            <div class="feeds-status">
+                <h3>RSS Feeds Status</h3>
+                <div id="feedsList">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        Loading feeds...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="cache-info" id="cacheInfo">
+        Cache: Loading...
+    </div>
+
+    <script>
+        // Cache management
+        const CACHE_DURATION = 30000; // 30 seconds
+        const cache = new Map();
+        let articlesChart;
+        let sourcesChart;
+        let lastUpdateTime = null;
+
+        class ApiCache {
+            static set(key, data) {
+                cache.set(key, {
+                    data: data,
+                    timestamp: Date.now()
+                });
+                this.updateCacheInfo();
+            }
+
+            static get(key) {
+                const cached = cache.get(key);
+                if (!cached) return null;
+                
+                const isExpired = Date.now() - cached.timestamp > CACHE_DURATION;
+                if (isExpired) {
+                    cache.delete(key);
+                    this.updateCacheInfo();
+                    return null;
+                }
+                
+                return cached.data;
+            }
+
+            static updateCacheInfo() {
+                const cacheSize = cache.size;
+                const keys = Array.from(cache.keys()).join(', ');
+                const lastUpdate = lastUpdateTime ? new Date(lastUpdateTime).toLocaleTimeString() : 'Never';
+                document.getElementById('cacheInfo').textContent = 
+                    `Cache: ${cacheSize} items | Last update: ${lastUpdate}`;
+            }
+        }
+
+        // Enhanced API call with better error handling
+        async function cachedFetch(url, cacheKey) {
+            // Check cache first
+            const cached = ApiCache.get(cacheKey);
+            if (cached) {
+                console.log(`Cache hit for ${cacheKey}`);
+                return cached;
+            }
+
+            console.log(`Cache miss for ${cacheKey}, fetching from: ${url}`);
+            
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+                
+                const response = await fetch(url, { 
+                    signal: controller.signal,
+                    headers: {
+                        'Cache-Control': 'no-cache',
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                // Cache the result
+                ApiCache.set(cacheKey, data);
+                lastUpdateTime = Date.now();
+                
+                return data;
+            } catch (error) {
+                console.error(`Failed to fetch ${url}:`, error);
+                
+                // Return fallback data based on endpoint
+                return this.getFallbackData(cacheKey, error);
+            }
+        }
+
+        function getFallbackData(cacheKey, error) {
+            const isNetworkError = error.name === 'AbortError' || error.message.includes('fetch');
+            
+            switch (cacheKey) {
+                case 'health':
+                    return { 
+                        status: isNetworkError ? 'unknown' : 'degraded', 
+                        uptime: 0, 
+                        services: {},
+                        error: error.message 
+                    };
+                case 'articles':
+                case 'articles-count':
+                    return { 
+                        articles: [], 
+                        pagination: { total: 0 },
+                        error: error.message
+                    };
+                case 'feeds':
+                    return { 
+                        feeds: [],
+                        error: error.message 
+                    };
+                default:
+                    throw error;
+            }
+        }
+
+        // Initialize dashboard with better error handling
+        async function initDashboard() {
+            try {
+                console.log('Initializing dashboard...');
+                
+                // Show initial loading state
+                updateStatusCards({
+                    totalArticles: 'Loading...',
+                    totalDuplicates: 'Loading...',
+                    activeFeeds: 'Loading...',
+                    systemStatus: 'Checking...'
+                });
+                
+                // Load data in parallel
+                const promises = [
+                    loadSystemStats(),
+                    loadArticles(),
+                    loadFeeds(),
+                    initCharts()
+                ];
+                
+                const results = await Promise.allSettled(promises);
+                
+                // Log any failures
+                results.forEach((result, index) => {
+                    if (result.status === 'rejected') {
+                        console.error(`Promise ${index} failed:`, result.reason);
+                    }
+                });
+                
+                console.log('Dashboard initialized');
+                
+                // Set up auto-refresh with staggered intervals
+                setInterval(loadSystemStats, 60000);  // Every minute
+                setInterval(loadArticles, 90000);     // Every 1.5 minutes
+                setInterval(loadFeeds, 120000);       // Every 2 minutes
+                
+            } catch (error) {
+                console.error('Dashboard initialization failed:', error);
+                showError('Dashboard initialization failed. Please refresh the page.');
+            }
+        }
+
+        function updateStatusCards(updates) {
+            Object.entries(updates).forEach(([key, value]) => {
+                const element = document.getElementById(key);
+                if (element) {
+                    element.textContent = value;
+                }
+            });
+        }
+
+        async function loadSystemStats() {
+            try {
+                console.log('Loading system stats...');
+                
+                // Try detailed health endpoint first
+                let health;
+                try {
+                    health = await cachedFetch('/api/health/detailed', 'health-detailed');
+                } catch (e) {
+                    console.log('Detailed health failed, trying basic health...');
+                    health = await cachedFetch('/api/health', 'health-basic');
+                }
+                
+                // Update system status
+                const isHealthy = health.status === 'healthy';
+                const status = isHealthy ? '🟢 Healthy' : 
+                             health.status === 'degraded' ? '🟡 Degraded' : 
+                             health.error ? '🔴 API Error' : '🔴 Unknown';
+                
+                document.getElementById('systemStatus').textContent = status;
+                document.getElementById('statusTrend').textContent = 
+                    `Uptime: ${Math.floor((health.uptime || 0) / 60)}m`;
+                document.getElementById('systemDetails').textContent = 
+                    health.error ? `Error: ${health.error}` : 'Services operational';
+
+                // Try to get articles statistics
+                try {
+                    const articlesData = await cachedFetch('/api/news/articles?limit=1', 'articles-count');
+                    const articlesCount = articlesData.pagination?.total || 0;
+                    
+                    document.getElementById('totalArticles').textContent = articlesCount;
+                    document.getElementById('articlesTrend').textContent = 
+                        articlesCount > 0 ? 'Processing feeds...' : 'Waiting for articles';
+                    document.getElementById('articlesDetails').textContent = 
+                        articlesData.error ? 'API Error' : `Last updated: ${new Date().toLocaleTimeString()}`;
+                } catch (e) {
+                    console.log('Articles count failed:', e);
+                    document.getElementById('totalArticles').textContent = '?';
+                    document.getElementById('articlesTrend').textContent = 'API unavailable';
+                    document.getElementById('articlesDetails').textContent = 'Cannot reach news API';
+                }
+
+                // Try to get duplicates count
+                try {
+                    const duplicatesData = await cachedFetch('/api/news/duplicates?limit=1', 'duplicates-count');
+                    const duplicatesCount = duplicatesData.pagination?.total || 0;
+                    
+                    document.getElementById('totalDuplicates').textContent = duplicatesCount;
+                    document.getElementById('duplicatesTrend').textContent = 'Detecting...';
+                    document.getElementById('duplicatesDetails').textContent = 
+                        `${duplicatesCount} found so far`;
+                } catch (e) {
+                    document.getElementById('totalDuplicates').textContent = '0';
+                    document.getElementById('duplicatesTrend').textContent = 'Monitoring';
+                    document.getElementById('duplicatesDetails').textContent = 'Detection active';
+                }
+
+                // Update feeds count (will be updated by loadFeeds)
+                document.getElementById('activeFeeds').textContent = '4';
+                document.getElementById('feedsTrend').textContent = 'Monitoring...';
+                document.getElementById('feedsDetails').textContent = 'RSS feeds active';
+
+            } catch (error) {
+                console.error('Failed to load system stats:', error);
+                document.getElementById('systemStatus').textContent = '🔴 Error';
+                document.getElementById('statusTrend').textContent = 'Connection failed';
+                document.getElementById('systemDetails').textContent = error.message;
+            }
+        }
+
+        async function loadArticles(force = false) {
+            try {
+                console.log('Loading articles...');
+                const cacheKey = force ? `articles-${Date.now()}` : 'articles';
+                const data = await cachedFetch('/api/news/articles?limit=20&page=1', cacheKey);
+                
+                const articlesList = document.getElementById('articlesList');
+                
+                if (data.articles && data.articles.length > 0) {
+                    articlesList.innerHTML = data.articles.map(article => `
+                        <div class="article-item">
+                            <div class="article-title">${escapeHtml(article.title || 'Untitled')}</div>
+                            <div class="article-meta">
+                                <span class="source-tag">${escapeHtml(article.source || 'Unknown')}</span>
+                                <span>${formatDate(article.publishedAt)}</span>
+                                <span>${formatTime(article.publishedAt)}</span>
+                                ${article.isDuplicate ? '<span class="duplicate-badge">Duplicate</span>' : ''}
+                            </div>
+                            <div class="article-summary">
+                                ${escapeHtml((article.summary || article.content || 'No summary available').substring(0, 200))}...
+                            </div>
+                        </div>
+                    `).join('');
+                    
+                    // Update total count
+                    const totalCount = data.pagination?.total || data.articles.length;
+                    document.getElementById('totalArticles').textContent = totalCount;
+                    document.getElementById('articlesTrend').textContent = `${data.articles.length} recent`;
+                    
+                    // Update chart data
+                    updateSourcesChart(data.articles);
+                } else if (data.error) {
+                    articlesList.innerHTML = `
+                        <div class="error-message">
+                            API Error: ${escapeHtml(data.error)}<br>
+                            <small>The news API is experiencing issues.</small>
+                        </div>`;
+                } else {
+                    articlesList.innerHTML = `
+                        <div class="loading">
+                            No articles found yet.<br>
+                            <small>The system processes feeds every 5 minutes.</small>
+                        </div>`;
+                }
+            } catch (error) {
+                console.error('Failed to load articles:', error);
+                document.getElementById('articlesList').innerHTML = `
+                    <div class="error-message">
+                        Failed to load articles. The API might be slow or unavailable.<br>
+                        <small>Error: ${escapeHtml(error.message)}</small>
+                    </div>`;
+            }
+        }
+
+        async function loadFeeds() {
+            try {
+                console.log('Loading feeds...');
+                const data = await cachedFetch('/api/news/feeds', 'feeds');
+                
+                const feedsList = document.getElementById('feedsList');
+                
+                if (data.feeds && data.feeds.length > 0) {
+                    const activeFeeds = data.feeds.filter(feed => !feed.errorCount || feed.errorCount === 0);
+                    
+                    feedsList.innerHTML = data.feeds.map(feed => `
+                        <div class="feed-item">
+                            <div class="feed-name">${escapeHtml(feed.name || feed.id)}</div>
+                            <div class="feed-status ${(feed.errorCount || 0) > 0 ? 'error' : 'active'}">
+                                ${(feed.errorCount || 0) > 0 ? 'Error' : 'Active'}
+                            </div>
+                        </div>
+                    `).join('');
+                    
+                    // Update feeds count
+                    document.getElementById('activeFeeds').textContent = activeFeeds.length;
+                    document.getElementById('feedsTrend').textContent = `${data.feeds.length} total`;
+                    document.getElementById('feedsDetails').textContent = 
+                        `${activeFeeds.length} active, ${data.feeds.length - activeFeeds.length} with errors`;
+                        
+                } else if (data.error) {
+                    feedsList.innerHTML = `
+                        <div class="error-message">
+                            API Error: ${escapeHtml(data.error)}<br>
+                            <small>Cannot load feeds configuration.</small>
+                        </div>`;
+                } else {
+                    feedsList.innerHTML = '<div class="loading">No feeds configured.</div>';
+                }
+            } catch (error) {
+                console.error('Failed to load feeds:', error);
+                document.getElementById('feedsList').innerHTML = `
+                    <div class="error-message">
+                        Failed to load feeds.<br>
+                        <small>Error: ${escapeHtml(error.message)}</small>
+                    </div>`;
+            }
+        }
+
+        function initCharts() {
+            try {
+                // Articles processed chart (sample data)
+                const articlesCtx = document.getElementById('articlesChart').getContext('2d');
+                articlesChart = new Chart(articlesCtx, {
+                    type: 'line',
+                    data: {
+                        labels: ['6h ago', '5h ago', '4h ago', '3h ago', '2h ago', '1h ago', 'Now'],
+                        datasets: [{
+                            label: 'Articles Processed',
+                            data: [2, 5, 3, 8, 12, 15, 18],
+                            borderColor: '#667eea',
+                            backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { 
+                            legend: { display: false }
+                        },
+                        scales: { 
+                            y: { 
+                                beginAtZero: true,
+                                ticks: {
+                                    stepSize: 1
+                                }
+                            }
+                        }
+                    }
+                });
+
+                // Sources chart (initial data)
+                const sourcesCtx = document.getElementById('sourcesChart').getContext('2d');
+                sourcesChart = new Chart(sourcesCtx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['Loading...'],
+                        datasets: [{
+                            data: [1],
+                            backgroundColor: ['#6b7280'],
+                            borderWidth: 0
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { 
+                            legend: { 
+                                position: 'bottom',
+                                labels: {
+                                    padding: 20,
+                                    usePointStyle: true
+                                }
+                            }
+                        }
+                    }
+                });
+                
+                console.log('Charts initialized');
+            } catch (error) {
+                console.error('Failed to initialize charts:', error);
+            }
+        }
+
+        function updateSourcesChart(articles) {
+            if (!sourcesChart || !articles || articles.length === 0) return;
+            
+            try {
+                const sourceCounts = {};
+                articles.forEach(article => {
+                    const source = article.source || 'Unknown';
+                    sourceCounts[source] = (sourceCounts[source] || 0) + 1;
+                });
+                
+                const sources = Object.keys(sourceCounts);
+                const counts = Object.values(sourceCounts);
+                const colors = ['#667eea', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+                
+                sourcesChart.data.labels = sources;
+                sourcesChart.data.datasets[0].data = counts;
+                sourcesChart.data.datasets[0].backgroundColor = colors.slice(0, sources.length);
+                sourcesChart.update();
+                
+                console.log('Sources chart updated with', sources.length, 'sources');
+            } catch (error) {
+                console.error('Failed to update sources chart:', error);
+            }
+        }
+
+        async function forceRefreshArticles() {
+            const btn = document.getElementById('refreshBtn');
+            btn.disabled = true;
+            btn.classList.add('loading');
+            btn.textContent = '';
+            
+            try {
+                // Clear cache for articles
+                cache.delete('articles');
+                cache.delete('articles-count');
+                
+                await Promise.all([
+                    loadArticles(true),
+                    loadSystemStats()
+                ]);
+                
+                console.log('Forced refresh completed');
+            } catch (error) {
+                console.error('Forced refresh failed:', error);
+                showError('Failed to refresh data');
+            } finally {
+                btn.disabled = false;
+                btn.classList.remove('loading');
+                btn.textContent = '🔄 Refresh';
+            }
+        }
+
+        // Utility functions
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function formatDate(dateString) {
+            try {
+                return new Date(dateString).toLocaleDateString();
+            } catch {
+                return 'Unknown date';
+            }
+        }
+
+        function formatTime(dateString) {
+            try {
+                return new Date(dateString).toLocaleTimeString();
+            } catch {
+                return 'Unknown time';
+            }
+        }
+
+        function showError(message) {
+            console.error(message);
+            // Could add a toast notification here
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error-message';
+            errorDiv.textContent = message;
+            errorDiv.style.position = 'fixed';
+            errorDiv.style.top = '20px';
+            errorDiv.style.right = '20px';
+            errorDiv.style.zIndex = '9999';
+            errorDiv.style.maxWidth = '300px';
+            
+            document.body.appendChild(errorDiv);
+            
+            setTimeout(() => {
+                if (errorDiv.parentNode) {
+                    errorDiv.parentNode.removeChild(errorDiv);
+                }
+            }, 5000);
+        }
+
+        // API connectivity test
+        async function testApiConnectivity() {
+            try {
+                console.log('Testing API connectivity...');
+                const response = await fetch('/api/health', { 
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' }
+                });
+                
+                if (response.ok) {
+                    console.log('✅ API is reachable');
+                    return true;
+                } else {
+                    console.log('⚠️ API returned error:', response.status, response.statusText);
+                    return false;
+                }
+            } catch (error) {
+                console.log('❌ API is not reachable:', error.message);
+                return false;
+            }
+        }
+
+        // Initialize dashboard when page loads
+        document.addEventListener('DOMContentLoaded', async () => {
+            console.log('DOM loaded, starting dashboard initialization...');
+            
+            // Test API connectivity first
+            const apiReachable = await testApiConnectivity();
+            if (!apiReachable) {
+                showError('Warning: Cannot reach the API. Some features may not work.');
+            }
+            
+            await initDashboard();
+        });
+        
+        // Handle page visibility changes to refresh when user returns
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                console.log('Page became visible, refreshing data...');
+                loadSystemStats();
+                loadArticles();
+            }
+        });
+
+        // Add error handler for unhandled promise rejections
+        window.addEventListener('unhandledrejection', (event) => {
+            console.error('Unhandled promise rejection:', event.reason);
+            event.preventDefault(); // Prevent the default console error
+        });
+
+        // Add global error handler
+        window.addEventListener('error', (event) => {
+            console.error('Global error:', event.error);
+        });
+    </script>
+</body>
+</html>

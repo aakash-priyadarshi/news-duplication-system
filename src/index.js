@@ -4,6 +4,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
+const path = require('path');
 const { RateLimiterMemory } = require('rate-limiter-flexible');
 
 // Internal imports
@@ -109,14 +110,15 @@ class NewsDeduplicationApp {
   }
 
   setupMiddleware() {
-    // Security middleware
+    // Security middleware with relaxed CSP for dashboard
     this.app.use(helmet({
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
           styleSrc: ["'self'", "'unsafe-inline'"],
-          scriptSrc: ["'self'"],
+          scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
           imgSrc: ["'self'", "data:", "https:"],
+          connectSrc: ["'self'"],
         },
       },
     }));
@@ -148,6 +150,9 @@ class NewsDeduplicationApp {
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
     
+    // Serve static files from public directory
+    this.app.use(express.static(path.join(__dirname, '../public')));
+    
     // Request logging
     this.app.use((req, res, next) => {
       logger.info(`📥 ${req.method} ${req.path} - ${req.ip}`);
@@ -172,7 +177,12 @@ class NewsDeduplicationApp {
     this.app.use('/api/health', healthRoutes);
     this.app.use('/api/metrics', metricsRoutes);
     
-    // Root endpoint
+    // Dashboard route - serve the HTML file
+    this.app.get('/dashboard', (req, res) => {
+      res.sendFile(path.join(__dirname, '../public/index.html'));
+    });
+    
+    // Root endpoint with dashboard link
     this.app.get('/', (req, res) => {
       res.json({
         name: 'News Deduplication System',
@@ -180,11 +190,13 @@ class NewsDeduplicationApp {
         status: 'running',
         timestamp: new Date().toISOString(),
         endpoints: {
+          dashboard: '/dashboard',
           health: '/api/health',
           metrics: '/api/metrics',
           news: '/api/news',
           alerts: '/api/alerts',
         },
+        description: 'Visit /dashboard for the web interface',
       });
     });
     
@@ -197,12 +209,13 @@ class NewsDeduplicationApp {
       });
     });
     
-    // 404 handler - FIXED: Use a proper route pattern instead of '*'
+    // 404 handler
     this.app.use((req, res) => {
       res.status(404).json({
         error: 'Not Found',
         message: `The endpoint ${req.method} ${req.originalUrl} was not found.`,
         timestamp: new Date().toISOString(),
+        availableEndpoints: ['/', '/dashboard', '/api/health', '/api/news', '/api/alerts', '/api/metrics']
       });
     });
   }
@@ -274,6 +287,7 @@ class NewsDeduplicationApp {
       this.server = this.app.listen(port, host, () => {
         logger.info(`🌟 News Deduplication System running at http://${host}:${port}`);
         logger.info(`📋 Environment: ${process.env.NODE_ENV || 'development'}`);
+        logger.info(`🎛️  Dashboard: http://${host}:${port}/dashboard`);
         logger.info(`🏥 Health check: http://${host}:${port}/api/health`);
         logger.info(`📊 Metrics: http://${host}:${port}/api/metrics`);
         logger.info('🚀 System is ready to process news feeds!');
