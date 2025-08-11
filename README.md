@@ -8,7 +8,7 @@
 
 A comprehensive solution to eliminate redundant news alerts in automated sales intelligence workflows. This system tackles the challenge of multiple publications covering the same breaking news story at different times, which can create alert fatigue for sales teams. It detects duplicate news in real-time and delivers only unique, high-value alerts.
 
-![Dashboard Screenshot](https://via.placeholder.com/800x400/667eea/white?text=News+Deduplication+Dashboard)
+![Dashboard Screenshot](img/img.png)
 
 ## 🎯 Key Features
 
