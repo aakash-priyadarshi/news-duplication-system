@@ -8,8 +8,8 @@ const configSchema = Joi.object({
   HOST: Joi.string().hostname().default('localhost'),
   
   // Database
-  MONGODB_URI: Joi.string().uri().required(),
-  REDIS_URL: Joi.string().uri().required(),
+  MONGODB_URI: Joi.string().uri().default('mongodb://localhost:27017/news_deduplication'),
+  REDIS_URL: Joi.string().uri().default('redis://localhost:6379'),
   
   // API Keys
   OPENAI_API_KEY: Joi.string().optional(),
@@ -33,7 +33,7 @@ const configSchema = Joi.object({
   VECTOR_DIMENSION: Joi.number().default(384),
   
   // Security
-  JWT_SECRET: Joi.string().min(32).required(),
+  JWT_SECRET: Joi.string().min(32).default('your_jwt_secret_here_please_change_in_production'),
   API_RATE_LIMIT_WINDOW_MS: Joi.number().default(900000),
   API_RATE_LIMIT_MAX_REQUESTS: Joi.number().default(100),
   
@@ -80,22 +80,16 @@ class ConfigManager {
         mongodb: {
           uri: envVars.MONGODB_URI,
           options: {
-            useNewUrlParser: true,
-            useUnifiedTopology: true,
             maxPoolSize: 10,
             serverSelectionTimeoutMS: 5000,
             socketTimeoutMS: 45000,
-            bufferMaxEntries: 0,
-            bufferCommands: false,
+            // Removed deprecated options for newer MongoDB driver versions
           },
         },
         redis: {
           url: envVars.REDIS_URL,
-          options: {
-            maxRetriesPerRequest: 3,
-            retryDelayOnFailover: 100,
-            enableOfflineQueue: false,
-            lazyConnect: true,
+          socket: {
+            reconnectStrategy: (retries) => Math.min(retries * 50, 500),
           },
         },
       },
@@ -320,11 +314,11 @@ class ConfigManager {
     const requiredKeys = [];
     const missingKeys = [];
 
-    // Check for at least one AI provider
+    // Check for at least one AI provider (optional)
     if (!this.config.ai.openai.apiKey && 
         !this.config.ai.anthropic.apiKey && 
         !this.config.ai.cohere.apiKey) {
-      missingKeys.push('At least one AI provider API key (OpenAI, Anthropic, or Cohere)');
+      console.log('⚠️  No AI provider API keys found - using fallback algorithms');
     }
 
     if (missingKeys.length > 0) {
@@ -335,9 +329,15 @@ class ConfigManager {
   getAvailableAiProviders() {
     const providers = [];
     
-    if (this.config.ai.openai.apiKey) providers.push('openai');
-    if (this.config.ai.anthropic.apiKey) providers.push('anthropic');
-    if (this.config.ai.cohere.apiKey) providers.push('cohere');
+    if (this.config.ai.openai.apiKey && this.config.ai.openai.apiKey !== 'your_openai_api_key_here') {
+      providers.push('openai');
+    }
+    if (this.config.ai.anthropic.apiKey && this.config.ai.anthropic.apiKey !== 'your_anthropic_api_key_here') {
+      providers.push('anthropic');
+    }
+    if (this.config.ai.cohere.apiKey && this.config.ai.cohere.apiKey !== 'your_cohere_api_key_here') {
+      providers.push('cohere');
+    }
     
     return providers;
   }

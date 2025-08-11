@@ -1,57 +1,78 @@
 version: '3.8'
 
 services:
-  app:
-    build: .
-    ports:
-      - "3000:3000"
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      - mongodb
-      - redis
-    networks:
-      - news-network
-    volumes:
-      - ./logs:/app/logs
-      - ./config:/app/config
-
   mongodb:
     image: mongo:7.0
+    container_name: news-dedup-mongo
+    restart: unless-stopped
     ports:
       - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: news_deduplication
     volumes:
       - mongodb_data:/data/db
-      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+      - ./config/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
     networks:
       - news-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
 
   redis:
     image: redis:7.2-alpine
+    container_name: news-dedup-redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
     networks:
       - news-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
-  n8n:
-    image: n8nio/n8n:latest
+  # Optional: MongoDB Express for database management
+  mongo-express:
+    image: mongo-express:latest
+    container_name: news-dedup-mongo-express
+    restart: unless-stopped
     ports:
-      - "5678:5678"
+      - "8081:8081"
     environment:
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=admin
-      - N8N_BASIC_AUTH_PASSWORD=admin
-    volumes:
-      - n8n_data:/home/node/.n8n
+      ME_CONFIG_MONGODB_SERVER: mongodb
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin123
+    depends_on:
+      - mongodb
+    networks:
+      - news-network
+
+  # Optional: Redis Commander for Redis management
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: news-dedup-redis-commander
+    restart: unless-stopped
+    ports:
+      - "8082:8081"
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    depends_on:
+      - redis
     networks:
       - news-network
 
 volumes:
   mongodb_data:
+    driver: local
   redis_data:
-  n8n_data:
+    driver: local
 
 networks:
   news-network:

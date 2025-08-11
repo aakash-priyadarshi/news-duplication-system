@@ -115,7 +115,7 @@ class ContentExtractor {
       if (element.length > 0) {
         const text = element.text().trim();
         if (text.length > 100) { // Minimum content length
-          return this.processContentElement(element);
+          return this.processContentElement($, element);
         }
       }
     }
@@ -124,8 +124,8 @@ class ContentExtractor {
     return this.findLargestTextBlock($);
   }
 
-  processContentElement(element) {
-    const $ = element.root();
+  processContentElement($, element) {
+    // Fixed: Pass $ as parameter and use it directly
     const $element = $(element);
     
     // Remove nested unwanted elements

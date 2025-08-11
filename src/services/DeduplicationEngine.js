@@ -3,7 +3,6 @@ const natural = require('natural');
 const stringSimilarity = require('string-similarity');
 const Levenshtein = require('levenshtein');
 const crypto = require('crypto');
-const { TfIdf } = require('tf-idf');
 const stopword = require('stopword');
 const stemmer = require('stemmer');
 
@@ -13,6 +12,54 @@ const LLMAnalyzer = require('../utils/LLMAnalyzer');
 const VectorSimilarity = require('../utils/VectorSimilarity');
 const ClusteringEngine = require('../utils/ClusteringEngine');
 
+// Simple TF-IDF implementation since the library might not be available
+class SimpleTfIdf {
+  constructor() {
+    this.documents = [];
+    this.vocabulary = new Set();
+  }
+
+  addDocument(document) {
+    const words = this.tokenize(document);
+    this.documents.push(words);
+    words.forEach(word => this.vocabulary.add(word));
+  }
+
+  tokenize(text) {
+    return text.toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .split(/\s+/)
+      .filter(word => word.length > 2);
+  }
+
+  tf(term, document) {
+    const termCount = document.filter(word => word === term).length;
+    return termCount / document.length;
+  }
+
+  idf(term) {
+    const docsWithTerm = this.documents.filter(doc => doc.includes(term)).length;
+    return Math.log(this.documents.length / (docsWithTerm || 1));
+  }
+
+  tfidf(term, docIndex) {
+    if (docIndex >= this.documents.length) return 0;
+    const document = this.documents[docIndex];
+    return this.tf(term, document) * this.idf(term);
+  }
+
+  getVector(docIndex) {
+    const vector = [];
+    const vocab = Array.from(this.vocabulary);
+    
+    for (const term of vocab) {
+      vector.push(this.tfidf(term, docIndex));
+    }
+    
+    return vector;
+  }
+}
+
 class DeduplicationEngine extends EventEmitter {
   constructor() {
     super();
@@ -21,7 +68,7 @@ class DeduplicationEngine extends EventEmitter {
     this.vectorSimilarity = new VectorSimilarity();
     this.clusteringEngine = new ClusteringEngine();
     
-    this.tfidf = new TfIdf();
+    this.tfidf = new SimpleTfIdf();
     this.processingQueue = [];
     this.isProcessing = false;
     
@@ -305,13 +352,13 @@ class DeduplicationEngine extends EventEmitter {
       if (!content1 || !content2) return 0;
       
       // Create temporary TF-IDF instance for comparison
-      const tfidf = new TfIdf();
+      const tfidf = new SimpleTfIdf();
       tfidf.addDocument(content1);
       tfidf.addDocument(content2);
       
       // Calculate cosine similarity between TF-IDF vectors
-      const vector1 = this.getTfIdfVector(tfidf, 0);
-      const vector2 = this.getTfIdfVector(tfidf, 1);
+      const vector1 = tfidf.getVector(0);
+      const vector2 = tfidf.getVector(1);
       
       return this.cosineSimilarity(vector1, vector2);
       
@@ -560,23 +607,6 @@ class DeduplicationEngine extends EventEmitter {
     
     const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
     return magnitude === 0 ? 0 : dotProduct / magnitude;
-  }
-
-  getTfIdfVector(tfidf, docIndex) {
-    const vector = [];
-    const terms = [];
-    
-    // Get all unique terms
-    tfidf.listTerms(docIndex).forEach(item => {
-      terms.push(item.term);
-    });
-    
-    // Create vector with TF-IDF values
-    terms.forEach(term => {
-      vector.push(tfidf.tfidf(term, docIndex));
-    });
-    
-    return vector;
   }
 
   determinePrimaryMethod(scores) {

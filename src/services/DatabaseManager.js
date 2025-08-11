@@ -53,7 +53,15 @@ class DatabaseManager extends EventEmitter {
 
   async connectMongoDB() {
     try {
-      this.mongoClient = new MongoClient(config.database.mongodb.uri, config.database.mongodb.options);
+      // Updated MongoDB connection options for newer versions
+      const mongoOptions = {
+        maxPoolSize: 10,
+        serverSelectionTimeoutMS: 5000,
+        socketTimeoutMS: 45000,
+        // Removed deprecated options: bufferMaxEntries, bufferCommands
+      };
+
+      this.mongoClient = new MongoClient(config.database.mongodb.uri, mongoOptions);
       await this.mongoClient.connect();
       
       // Test the connection
@@ -81,7 +89,18 @@ class DatabaseManager extends EventEmitter {
 
   async connectRedis() {
     try {
-      this.redisClient = Redis.createClient(config.database.redis);
+      // Updated Redis connection for newer versions
+      const redisOptions = {
+        socket: {
+          reconnectStrategy: (retries) => Math.min(retries * 50, 500),
+        },
+        // Removed deprecated options
+      };
+
+      this.redisClient = Redis.createClient({
+        url: config.database.redis.url,
+        ...redisOptions
+      });
       
       // Set up Redis event listeners
       this.redisClient.on('error', (error) => {
@@ -109,13 +128,19 @@ class DatabaseManager extends EventEmitter {
       
     } catch (error) {
       logger.error('❌ Redis connection failed:', error);
-      throw error;
+      // Don't fail completely if Redis is not available
+      logger.warn('⚠️  Continuing without Redis cache');
     }
   }
 
   async initializeCollections() {
     try {
       logger.info('🏗️  Initializing database collections and indexes...');
+      
+      // Make sure we have a valid database connection
+      if (!this.mongodb) {
+        throw new Error('MongoDB connection not established');
+      }
       
       // Articles collection
       const articlesCollection = this.mongodb.collection('articles');
@@ -148,14 +173,12 @@ class DatabaseManager extends EventEmitter {
           }
         },
         
-        // Geospatial index for location-based articles
-        { key: { location: '2dsphere' } },
-        
-        // TTL index for old articles cleanup
+        // TTL index for old articles cleanup (90 days)
         { 
           key: { createdAt: 1 }, 
           options: { 
-            expireAfterSeconds: 60 * 60 * 24 * 90 // 90 days
+            expireAfterSeconds: 60 * 60 * 24 * 90,
+            name: 'articles_ttl'
           }
         }
       ]);
@@ -168,7 +191,7 @@ class DatabaseManager extends EventEmitter {
         { key: { similarityScore: -1 } },
         { key: { detectionMethod: 1 } },
         { key: { createdAt: -1 } },
-        { key: { originalArticleId: 1, duplicateArticleId: 1 }, options: { unique: true } }
+        { key: { originalArticleId: 1, duplicateArticleId: 1 }, options: { unique: true, sparse: true } }
       ]);
       
       // Alerts collection
@@ -180,11 +203,12 @@ class DatabaseManager extends EventEmitter {
         { key: { priority: 1, createdAt: -1 } },
         { key: { sentAt: -1 } },
         
-        // TTL index for alert cleanup
+        // TTL index for alert cleanup (30 days)
         { 
           key: { createdAt: 1 }, 
           options: { 
-            expireAfterSeconds: 60 * 60 * 24 * 30 // 30 days
+            expireAfterSeconds: 60 * 60 * 24 * 30,
+            name: 'alerts_ttl'
           }
         }
       ]);
@@ -192,6 +216,7 @@ class DatabaseManager extends EventEmitter {
       // RSS Feeds collection
       const feedsCollection = this.mongodb.collection('feeds');
       await this.createIndexes(feedsCollection, [
+        { key: { id: 1 }, options: { unique: true } },
         { key: { url: 1 }, options: { unique: true } },
         { key: { enabled: 1 } },
         { key: { lastFetchedAt: -1 } },
@@ -207,12 +232,13 @@ class DatabaseManager extends EventEmitter {
         { key: { attempts: 1 } },
         { key: { scheduledFor: 1 } },
         
-        // TTL index for completed jobs cleanup
+        // TTL index for completed jobs cleanup (7 days)
         { 
           key: { completedAt: 1 }, 
           options: { 
-            expireAfterSeconds: 60 * 60 * 24 * 7, // 7 days
-            partialFilterExpression: { status: 'completed' }
+            expireAfterSeconds: 60 * 60 * 24 * 7,
+            partialFilterExpression: { status: 'completed' },
+            name: 'queue_completed_ttl'
           }
         }
       ]);
@@ -224,11 +250,12 @@ class DatabaseManager extends EventEmitter {
         { key: { type: 1, timestamp: -1 } },
         { key: { source: 1, timestamp: -1 } },
         
-        // TTL index for metrics cleanup
+        // TTL index for metrics cleanup (30 days)
         { 
           key: { timestamp: 1 }, 
           options: { 
-            expireAfterSeconds: 60 * 60 * 24 * 30 // 30 days
+            expireAfterSeconds: 60 * 60 * 24 * 30,
+            name: 'metrics_ttl'
           }
         }
       ]);
@@ -240,11 +267,12 @@ class DatabaseManager extends EventEmitter {
         { key: { model: 1 } },
         { key: { createdAt: -1 } },
         
-        // TTL index
+        // TTL index (7 days for vectors)
         { 
           key: { createdAt: 1 }, 
           options: { 
-            expireAfterSeconds: config.performance.cacheSettings.vectorTtl
+            expireAfterSeconds: 60 * 60 * 24 * 7,
+            name: 'embeddings_ttl'
           }
         }
       ]);
@@ -263,7 +291,9 @@ class DatabaseManager extends EventEmitter {
         await collection.createIndex(index.key, index.options || {});
       } catch (error) {
         // Ignore duplicate index errors
-        if (!error.message.includes('already exists')) {
+        if (!error.message.includes('already exists') && 
+            !error.message.includes('Index with name') &&
+            !error.message.includes('IndexOptionsConflict')) {
           logger.warn(`⚠️  Failed to create index:`, error.message);
         }
       }
@@ -272,6 +302,9 @@ class DatabaseManager extends EventEmitter {
 
   // MongoDB Operations
   async insertArticle(article) {
+    if (!this.mongodb) {
+      throw new Error('Database not connected');
+    }
     return this.mongodb.collection('articles').insertOne({
       ...article,
       createdAt: new Date(),
@@ -280,20 +313,32 @@ class DatabaseManager extends EventEmitter {
   }
 
   async findArticle(query) {
+    if (!this.mongodb) {
+      throw new Error('Database not connected');
+    }
     return this.mongodb.collection('articles').findOne(query);
   }
 
   async findArticles(query, options = {}) {
+    if (!this.mongodb) {
+      throw new Error('Database not connected');
+    }
     return this.mongodb.collection('articles').find(query, options).toArray();
   }
 
   async updateArticle(query, update) {
+    if (!this.mongodb) {
+      throw new Error('Database not connected');
+    }
     return this.mongodb.collection('articles').updateOne(query, {
       $set: { ...update, updatedAt: new Date() }
     });
   }
 
   async insertDuplicate(duplicate) {
+    if (!this.mongodb) {
+      throw new Error('Database not connected');
+    }
     return this.mongodb.collection('duplicates').insertOne({
       ...duplicate,
       createdAt: new Date()
@@ -301,14 +346,23 @@ class DatabaseManager extends EventEmitter {
   }
 
   async findDuplicates(query, options = {}) {
+    if (!this.mongodb) {
+      throw new Error('Database not connected');
+    }
     return this.mongodb.collection('duplicates').find(query, options).toArray();
   }
 
   async findAlerts(query, options = {}) {
+    if (!this.mongodb) {
+      throw new Error('Database not connected');
+    }
     return this.mongodb.collection('alerts').find(query, options).toArray();
   }
 
   async insertAlert(alert) {
+    if (!this.mongodb) {
+      throw new Error('Database not connected');
+    }
     return this.mongodb.collection('alerts').insertOne({
       ...alert,
       createdAt: new Date()
@@ -316,12 +370,18 @@ class DatabaseManager extends EventEmitter {
   }
 
   async updateAlert(query, update) {
+    if (!this.mongodb) {
+      throw new Error('Database not connected');
+    }
     return this.mongodb.collection('alerts').updateOne(query, {
       $set: { ...update, updatedAt: new Date() }
     });
   }
 
   async insertMetric(metric) {
+    if (!this.mongodb) {
+      throw new Error('Database not connected');
+    }
     return this.mongodb.collection('metrics').insertOne({
       ...metric,
       timestamp: new Date()
@@ -329,10 +389,16 @@ class DatabaseManager extends EventEmitter {
   }
 
   async findMetrics(query, options = {}) {
+    if (!this.mongodb) {
+      throw new Error('Database not connected');
+    }
     return this.mongodb.collection('metrics').find(query, options).toArray();
   }
 
   async insertEmbedding(embedding) {
+    if (!this.mongodb) {
+      throw new Error('Database not connected');
+    }
     return this.mongodb.collection('embeddings').replaceOne(
       { articleId: embedding.articleId },
       { ...embedding, createdAt: new Date() },
@@ -341,40 +407,87 @@ class DatabaseManager extends EventEmitter {
   }
 
   async findEmbedding(articleId) {
+    if (!this.mongodb) {
+      throw new Error('Database not connected');
+    }
     return this.mongodb.collection('embeddings').findOne({ articleId });
   }
 
   // Redis Operations
   async setCache(key, value, ttl = 3600) {
-    const serializedValue = typeof value === 'string' ? value : JSON.stringify(value);
-    return this.redisClient.setEx(key, ttl, serializedValue);
+    if (!this.redisClient) {
+      logger.warn('Redis not available, skipping cache set');
+      return;
+    }
+    
+    try {
+      const serializedValue = typeof value === 'string' ? value : JSON.stringify(value);
+      return this.redisClient.setEx(key, ttl, serializedValue);
+    } catch (error) {
+      logger.warn('Redis setCache failed:', error.message);
+    }
   }
 
   async getCache(key) {
-    const value = await this.redisClient.get(key);
-    if (!value) return null;
+    if (!this.redisClient) {
+      return null;
+    }
     
     try {
-      return JSON.parse(value);
-    } catch {
-      return value;
+      const value = await this.redisClient.get(key);
+      if (!value) return null;
+      
+      try {
+        return JSON.parse(value);
+      } catch {
+        return value;
+      }
+    } catch (error) {
+      logger.warn('Redis getCache failed:', error.message);
+      return null;
     }
   }
 
   async deleteCache(key) {
-    return this.redisClient.del(key);
+    if (!this.redisClient) {
+      return;
+    }
+    
+    try {
+      return this.redisClient.del(key);
+    } catch (error) {
+      logger.warn('Redis deleteCache failed:', error.message);
+    }
   }
 
   async existsCache(key) {
-    return this.redisClient.exists(key);
+    if (!this.redisClient) {
+      return false;
+    }
+    
+    try {
+      return this.redisClient.exists(key);
+    } catch (error) {
+      logger.warn('Redis existsCache failed:', error.message);
+      return false;
+    }
   }
 
   async incrementCounter(key, ttl = 3600) {
-    const count = await this.redisClient.incr(key);
-    if (count === 1) {
-      await this.redisClient.expire(key, ttl);
+    if (!this.redisClient) {
+      return 1; // Default counter value
     }
-    return count;
+    
+    try {
+      const count = await this.redisClient.incr(key);
+      if (count === 1) {
+        await this.redisClient.expire(key, ttl);
+      }
+      return count;
+    } catch (error) {
+      logger.warn('Redis incrementCounter failed:', error.message);
+      return 1;
+    }
   }
 
   // Utility methods
@@ -387,21 +500,25 @@ class DatabaseManager extends EventEmitter {
 
     try {
       // Check MongoDB
-      await this.mongodb.admin().ping();
-      status.mongodb = true;
+      if (this.mongodb) {
+        await this.mongodb.admin().ping();
+        status.mongodb = true;
+      }
     } catch (error) {
       logger.error('MongoDB health check failed:', error.message);
     }
 
     try {
       // Check Redis
-      await this.redisClient.ping();
-      status.redis = true;
+      if (this.redisClient) {
+        await this.redisClient.ping();
+        status.redis = true;
+      }
     } catch (error) {
       logger.error('Redis health check failed:', error.message);
     }
 
-    status.overall = status.mongodb && status.redis;
+    status.overall = status.mongodb; // Redis is optional
     return status;
   }
 
@@ -410,30 +527,38 @@ class DatabaseManager extends EventEmitter {
       const stats = {};
       
       // MongoDB stats
-      const dbStats = await this.mongodb.stats();
-      stats.mongodb = {
-        collections: dbStats.collections,
-        dataSize: dbStats.dataSize,
-        indexSize: dbStats.indexSize,
-        storageSize: dbStats.storageSize
-      };
-      
-      // Collection counts
-      stats.collections = {
-        articles: await this.mongodb.collection('articles').countDocuments(),
-        duplicates: await this.mongodb.collection('duplicates').countDocuments(),
-        alerts: await this.mongodb.collection('alerts').countDocuments(),
-        feeds: await this.mongodb.collection('feeds').countDocuments()
-      };
+      if (this.mongodb) {
+        const dbStats = await this.mongodb.stats();
+        stats.mongodb = {
+          collections: dbStats.collections,
+          dataSize: dbStats.dataSize,
+          indexSize: dbStats.indexSize,
+          storageSize: dbStats.storageSize
+        };
+        
+        // Collection counts
+        stats.collections = {
+          articles: await this.mongodb.collection('articles').countDocuments(),
+          duplicates: await this.mongodb.collection('duplicates').countDocuments(),
+          alerts: await this.mongodb.collection('alerts').countDocuments(),
+          feeds: await this.mongodb.collection('feeds').countDocuments()
+        };
+      }
       
       // Redis stats
-      const redisInfo = await this.redisClient.info();
-      const redisStats = this.parseRedisInfo(redisInfo);
-      stats.redis = {
-        memory: redisStats.used_memory_human,
-        keys: redisStats.db0 ? redisStats.db0.keys : 0,
-        operations: redisStats.total_commands_processed
-      };
+      if (this.redisClient) {
+        try {
+          const redisInfo = await this.redisClient.info();
+          const redisStats = this.parseRedisInfo(redisInfo);
+          stats.redis = {
+            memory: redisStats.used_memory_human,
+            keys: redisStats.db0 ? redisStats.db0.keys : 0,
+            operations: redisStats.total_commands_processed
+          };
+        } catch (error) {
+          stats.redis = { error: 'Redis not available' };
+        }
+      }
       
       return stats;
       
@@ -463,6 +588,7 @@ class DatabaseManager extends EventEmitter {
       
       if (this.mongoClient) {
         await this.mongoClient.close();
+        this.mongodb = null;
         logger.info('✅ MongoDB disconnected');
       }
       

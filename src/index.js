@@ -188,8 +188,17 @@ class NewsDeduplicationApp {
       });
     });
     
-    // 404 handler
-    this.app.use('*', (req, res) => {
+    // Health check endpoint (alternative)
+    this.app.get('/health', (req, res) => {
+      res.json({
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+      });
+    });
+    
+    // 404 handler - FIXED: Use a proper route pattern instead of '*'
+    this.app.use((req, res) => {
       res.status(404).json({
         error: 'Not Found',
         message: `The endpoint ${req.method} ${req.originalUrl} was not found.`,
@@ -266,7 +275,7 @@ class NewsDeduplicationApp {
         logger.info(`🌟 News Deduplication System running at http://${host}:${port}`);
         logger.info(`📋 Environment: ${process.env.NODE_ENV || 'development'}`);
         logger.info(`🏥 Health check: http://${host}:${port}/api/health`);
-        logger.info(`📊 Metrics: http://${host}:${config.metrics.port}/metrics`);
+        logger.info(`📊 Metrics: http://${host}:${port}/api/metrics`);
         logger.info('🚀 System is ready to process news feeds!');
       });
       

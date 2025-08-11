@@ -314,8 +314,8 @@ class NewsProcessor extends EventEmitter {
       // Media
       imageUrl: this.extractImageUrl(item),
       
-      // RSS specific
-      categories: item.categories || [],
+      // RSS specific - FIXED: Safely handle categories
+      categories: this.extractCategories(item.categories),
       
       // Processing metadata
       fetchedAt: new Date(),
@@ -329,6 +329,24 @@ class NewsProcessor extends EventEmitter {
     }
     
     return article;
+  }
+
+  // FIXED: New method to safely extract categories
+  extractCategories(categories) {
+    if (!categories) return [];
+    
+    if (!Array.isArray(categories)) return [];
+    
+    return categories.map(cat => {
+      // Handle both string categories and object categories
+      if (typeof cat === 'string') {
+        return cat;
+      } else if (typeof cat === 'object' && cat !== null) {
+        // Handle different object structures
+        return cat._ || cat.name || cat.term || String(cat);
+      }
+      return String(cat);
+    }).filter(cat => cat && typeof cat === 'string');
   }
 
   extractContent(item) {
@@ -384,7 +402,9 @@ class NewsProcessor extends EventEmitter {
       /([A-Z][a-z]+),\s*([A-Z]{2})/g
     ];
     
-    const textToSearch = `${item.title} ${item.summary || ''} ${item.categories?.join(' ') || ''}`;
+    // FIXED: Safely handle categories and other fields
+    const categoriesText = this.extractCategories(item.categories).join(' ');
+    const textToSearch = `${item.title || ''} ${item.summary || ''} ${categoriesText}`;
     
     for (const pattern of locationPatterns) {
       const match = pattern.exec(textToSearch);
