@@ -54,6 +54,15 @@ class NewsDeduplicationApp {
       await this.initializeServices();
       logger.info('✅ Core services initialized');
       
+      // Make services available to routes
+      this.app.locals.services = {
+        dbManager: this.dbManager,
+        newsProcessor: this.newsProcessor,
+        deduplicationEngine: this.deduplicationEngine,
+        alertManager: this.alertManager,
+        healthChecker: this.healthChecker
+      };
+      
       // Setup Express middleware
       this.setupMiddleware();
       logger.info('✅ Express middleware configured');
@@ -74,6 +83,7 @@ class NewsDeduplicationApp {
       
     } catch (error) {
       logger.error('❌ Failed to initialize application:', error);
+      console.error('Detailed error:', error.stack);
       throw error;
     }
   }

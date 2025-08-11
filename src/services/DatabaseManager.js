@@ -304,6 +304,10 @@ class DatabaseManager extends EventEmitter {
     return this.mongodb.collection('duplicates').find(query, options).toArray();
   }
 
+  async findAlerts(query, options = {}) {
+    return this.mongodb.collection('alerts').find(query, options).toArray();
+  }
+
   async insertAlert(alert) {
     return this.mongodb.collection('alerts').insertOne({
       ...alert,
