@@ -1,0 +1,66 @@
+{
+  "name": "news-deduplication-system",
+  "version": "1.0.0",
+  "description": "Comprehensive solution to eliminate redundant news alerts in automated sales intelligence workflows",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "lint": "eslint src/",
+    "setup": "node scripts/setup.js"
+  },
+  "keywords": [
+    "news-deduplication",
+    "sales-intelligence",
+    "rss-processing",
+    "n8n-automation",
+    "similarity-detection"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "express": "latest",
+    "axios": "latest",
+    "rss-parser": "latest",
+    "cheerio": "latest",
+    "compromise": "latest",
+    "natural": "latest",
+    "openai": "latest",
+    "@anthropic-ai/sdk": "latest",
+    "cohere-ai": "latest",
+    "langchain": "latest",
+    "@langchain/openai": "latest",
+    "@langchain/anthropic": "latest",
+    "mongodb": "latest",
+    "redis": "latest",
+    "node-cron": "latest",
+    "winston": "latest",
+    "dotenv": "latest",
+    "joi": "latest",
+    "lodash": "latest",
+    "moment": "latest",
+    "uuid": "latest",
+    "string-similarity": "latest",
+    "levenshtein": "latest",
+    "tf-idf": "latest",
+    "stopword": "latest",
+    "stemmer": "latest",
+    "cors": "latest",
+    "helmet": "latest",
+    "rate-limiter-flexible": "latest"
+  },
+  "devDependencies": {
+    "nodemon": "latest",
+    "jest": "latest",
+    "supertest": "latest",
+    "eslint": "latest",
+    "prettier": "latest",
+    "@types/node": "latest"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}
